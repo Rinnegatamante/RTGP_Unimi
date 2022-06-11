@@ -132,9 +132,11 @@ GLfloat linearAttenuation = 0.09f;
 GLfloat quadraticAttenuation = 0.032f;
 
 // Configuration for the SSAO kernel samples
-int kernelSize = 64;
-float kernelRadius = 0.5f;
-float kernelBias = 0.025f;
+int kernelSize = 64; // Kernel Size for CryEngine2 derivates techniques
+float kernelRadius = 0.5f; // Hemisphere/Sphere radius for the kernel
+float kernelBias = 0.025f; // Kernel bias for CryEngine2 derivates techniques and Angle bias for HBAO
+int numDirections = 16; // Number of different directions displacements to use for HBAO
+int numSteps = 4; // Number of steps to perform per each direction for HBAO
 
 // vector for the textures IDs
 vector<GLint> textureID;
@@ -142,17 +144,26 @@ vector<GLint> textureID;
 // UV repetitions
 GLfloat repeat = 1.0;
 
+// Flag that enables/disables additional blurring pass for the generated AO buffer
+bool have_blur = true;
+
 // Available ambient occlusion modes
 enum {
 	NO_SSAO,
-	SSAO,
-	SSAO_RECONSTR,
+	CRYENGINE2_AO,
+	CRYENGINE2_AO_RECONSTR,
+	STARCRAFT2_AO,
+	STARCRAFT2_AO_RECONSTR,
+	HBAO,
 	SSAO_MODES_NUM
 };
 const char *techniqueNames[] = {
 	"No Ambient Occlusion",
-	"Screen Space Ambient Occlusion (SSAO)",
-	"Screen Space Ambient Occlusion with Depth Resolve (SSAO)",
+	"CryEngine 2 AO",
+	"CryEngine 2 AO with Depth Resolve",
+	"StarCraft II AO",
+	"StarCraft II AO with Depth Resolve",
+	"Horizon Based Ambient Occlusion (HBAO)",
 };
 
 // G Buffer buffers
@@ -177,8 +188,50 @@ GLuint gPosition, gNormal, gAlbedo, SSAOColorBuffer, SSAOColorBufferBlurred;
 GLuint gbuffers[GBUFFER_BUFFERS_NUM];
 
 // Currently active SSAO mode
-GLint ssao_mode = SSAO;
+GLint ssao_mode = CRYENGINE2_AO;
 GLboolean camera_mode = GL_TRUE;
+
+// Functions used to generate samples for our SSAO techniques
+void generateSamplesForCryEngine(std::vector<glm::vec3>& SSAOKernel) { // CryEngine 2 AO generator (Sphere around a point)
+	std::uniform_real_distribution<GLfloat> randomFloats(0.0, 1.0);
+	std::default_random_engine generator;
+	SSAOKernel.clear();
+	for (unsigned int i = 0; i < kernelSize; ++i)
+	{
+		glm::vec3 sample(
+			randomFloats(generator) * 2.0 - 1.0,
+			randomFloats(generator) * 2.0 - 1.0,
+			randomFloats(generator) * 2.0 - 1.0);
+		sample = glm::normalize(sample);
+		sample *= randomFloats(generator);
+		float scale = float(i) / float(kernelSize);
+
+		// Scale samples so that they're more aligned to the center of the kernel
+		scale = (scale * scale) * 0.9f + 0.1f;
+		sample *= scale;
+		SSAOKernel.push_back(sample);
+	}
+}
+void generateSamplesForStarCraft(std::vector<glm::vec3>& SSAOKernel) { // StarCraft II AO generator (Oriented Hemisphere considering point normal)
+	std::uniform_real_distribution<GLfloat> randomFloats(0.0, 1.0);
+	std::default_random_engine generator;
+	SSAOKernel.clear();
+	for (unsigned int i = 0; i < kernelSize; ++i)
+	{
+		glm::vec3 sample(
+			randomFloats(generator) * 2.0 - 1.0,
+			randomFloats(generator) * 2.0 - 1.0,
+			randomFloats(generator)); // By sampling Z only in [0, 1] range, we effectively sample inside an hemisphere
+		sample = glm::normalize(sample);
+		sample *= randomFloats(generator);
+		float scale = float(i) / float(kernelSize);
+
+		// Scale samples so that they're more aligned to center of kernel
+		/*scale = (scale * scale) * 0.9f + 0.1f;
+		sample *= scale;*/
+		SSAOKernel.push_back(sample);
+	}
+}
 
 /////////////////// MAIN function ///////////////////////
 int main()
@@ -244,6 +297,7 @@ int main()
 	Shader lightingPass("ssao.vert", "lighting.frag");
 	Shader SSAOPass("ssao.vert", "ssao.frag");
 	Shader SSAOReconstrPass("ssao_reconstr.vert", "ssao_reconstr.frag");
+	Shader HBAOPass("ssao.vert", "hbao.frag");
 	Shader blurPass("ssao.vert", "blur.frag");
 	Shader simplePass("ssao.vert", "simple.frag");
 
@@ -339,23 +393,12 @@ int main()
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
 	// Generate the sample kernel required for SSAO processing
+	std::vector<glm::vec3> SSAOKernel;
+	generateSamplesForCryEngine(SSAOKernel);
+	
+	// Generate a noise texture required for SSAO processing holding random vectors to use as directions during AO calculation
 	std::uniform_real_distribution<GLfloat> randomFloats(0.0, 1.0);
 	std::default_random_engine generator;
-	std::vector<glm::vec3> SSAOKernel;
-	for (unsigned int i = 0; i < kernelSize; ++i)
-	{
-		glm::vec3 sample(randomFloats(generator) * 2.0 - 1.0, randomFloats(generator) * 2.0 - 1.0, randomFloats(generator));
-		sample = glm::normalize(sample);
-		sample *= randomFloats(generator);
-		float scale = float(i) / float(kernelSize);
-
-		// Scale samples so that they're more aligned to center of kernel
-		scale = (scale * scale) * 0.9f + 0.1f;
-		sample *= scale;
-		SSAOKernel.push_back(sample);
-	}
-	
-	// Generate a noise texture required for SSAO processing
 	std::vector<glm::vec3> SSAONoise;
 	for (unsigned int i = 0; i < 16; i++)
 	{
@@ -379,19 +422,17 @@ int main()
 	glUniform1i(glGetUniformLocation(SSAOPass.Program, "gPosition"), 0);
 	glUniform1i(glGetUniformLocation(SSAOPass.Program, "gNormal"), 1);
 	glUniform1i(glGetUniformLocation(SSAOPass.Program, "noiseTexture"), 2);
-	glUniform1i(glGetUniformLocation(SSAOPass.Program, "kernelSize"), kernelSize);
-	glUniform1f(glGetUniformLocation(SSAOPass.Program, "radius"), kernelRadius);
-	glUniform1f(glGetUniformLocation(SSAOPass.Program, "bias"), kernelBias);
 	glUniformMatrix4fv(glGetUniformLocation(SSAOPass.Program, "projectionMatrix"), 1, GL_FALSE, glm::value_ptr(projection));
+	HBAOPass.Use();
+	glUniform1i(glGetUniformLocation(HBAOPass.Program, "gPosition"), 0);
+	glUniform1i(glGetUniformLocation(HBAOPass.Program, "gNormal"), 1);
+	glUniform1i(glGetUniformLocation(HBAOPass.Program, "noiseTexture"), 2);
 	SSAOReconstrPass.Use();
 	glUniform1f(glGetUniformLocation(SSAOReconstrPass.Program, "gAspectRatio"), (float)screenWidth/(float)screenHeight);
 	glUniform1f(glGetUniformLocation(SSAOReconstrPass.Program, "gTanFOV"), tan(FOV));
 	glUniform1i(glGetUniformLocation(SSAOReconstrPass.Program, "gDepthMap"), 0);
 	glUniform1i(glGetUniformLocation(SSAOReconstrPass.Program, "gNormal"), 1);
 	glUniform1i(glGetUniformLocation(SSAOReconstrPass.Program, "noiseTexture"), 2);
-	glUniform1i(glGetUniformLocation(SSAOReconstrPass.Program, "kernelSize"), kernelSize);
-	glUniform1f(glGetUniformLocation(SSAOReconstrPass.Program, "radius"), kernelRadius);
-	glUniform1f(glGetUniformLocation(SSAOReconstrPass.Program, "bias"), kernelBias);
 	glUniformMatrix4fv(glGetUniformLocation(SSAOReconstrPass.Program, "projectionMatrix"), 1, GL_FALSE, glm::value_ptr(projection));
 	glUniformMatrix4fv(glGetUniformLocation(SSAOReconstrPass.Program, "invProjectionMatrix"), 1, GL_FALSE, glm::value_ptr(glm::inverse(projection)));
 	lightingPass.Use();
@@ -419,8 +460,31 @@ int main()
 	glUniform1i(glGetUniformLocation(simplePass.Program, "image"), 0);
 
 	// Rendering loop: this code is executed at each frame
+	int oldKernelSize = kernelSize;
+	int old_ssao_mode = ssao_mode;
+	int64_t numFrames = -1;
+	GLfloat deltaTimeSum = 0.0f;
+	GLfloat averageFrameTime = 0.0f;
 	while(!glfwWindowShouldClose(window))
 	{
+		// Regenerate the kernel samples if its size changes or if the SSAO mode changes
+		if (kernelSize != oldKernelSize || ssao_mode != old_ssao_mode) {
+			switch (ssao_mode) {
+			case CRYENGINE2_AO:
+			case CRYENGINE2_AO_RECONSTR:
+				generateSamplesForCryEngine(SSAOKernel);
+				break;
+			case STARCRAFT2_AO:
+			case STARCRAFT2_AO_RECONSTR:
+				generateSamplesForStarCraft(SSAOKernel);
+				break;
+			default:
+				break;
+			}
+		}
+		oldKernelSize = kernelSize;
+		old_ssao_mode = ssao_mode;
+		
 		// Handling changes in input mode for the mouse
 		glfwSetInputMode(window, GLFW_CURSOR, camera_mode ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
 
@@ -428,6 +492,11 @@ int main()
 		// and we calculate time difference between current frame rendering and the previous one
 		GLfloat currentFrame = glfwGetTime();
 		deltaTime = currentFrame - lastFrame;
+		numFrames++;
+		if (numFrames > 0) {
+			deltaTimeSum += deltaTime;
+			averageFrameTime = deltaTimeSum / (GLfloat)numFrames;
+		}	
 		lastFrame = currentFrame;
 
 		// Check is an I/O event is happening
@@ -449,7 +518,7 @@ int main()
 		// Render the full scene data into our auxiliary G Buffer
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 		glBindFramebuffer(GL_FRAMEBUFFER, gBuffer);
-		if (ssao_mode == SSAO_RECONSTR) {
+		if (ssao_mode == CRYENGINE2_AO_RECONSTR || ssao_mode == STARCRAFT2_AO_RECONSTR) { // If we use CryEngine 2 AO derivatives with depth resolve, we need a different program
 			// Using different geometry pass program if we want to reconstruct view positions instead of using G buffer to store them
 			glDrawBuffers(3, reconstr_attachments);
 			glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -468,15 +537,26 @@ int main()
 			// STEP 2 - SSAO Texture generation
 			glBindFramebuffer(GL_FRAMEBUFFER, SSAOfbo);
 			glClear(GL_COLOR_BUFFER_BIT);
-			if (ssao_mode == SSAO_RECONSTR) {
+			if (ssao_mode == CRYENGINE2_AO_RECONSTR || ssao_mode == STARCRAFT2_AO_RECONSTR) { // CryEngine2 derivates with Depth Resolve
 				SSAOReconstrPass.Use();
+				glUniform1i(glGetUniformLocation(SSAOReconstrPass.Program, "kernelSize"), kernelSize);
+				glUniform1f(glGetUniformLocation(SSAOReconstrPass.Program, "radius"), kernelRadius);
+				glUniform1f(glGetUniformLocation(SSAOReconstrPass.Program, "bias"), kernelBias);
 				for (int i = 0; i < kernelSize; i++) {
 					char binding[32];
 					sprintf(binding, "kernel[%d]", i);
 					glUniform3fv(glGetUniformLocation(SSAOReconstrPass.Program, binding), 1, glm::value_ptr(SSAOKernel[i]));
 				}
-			} else {
+			} else if (ssao_mode == HBAO) { // HBAO
+				HBAOPass.Use();
+				glUniform1i(glGetUniformLocation(HBAOPass.Program, "numDirections"), numDirections);
+				glUniform1f(glGetUniformLocation(HBAOPass.Program, "sampleRadius"), kernelRadius);
+				glUniform1i(glGetUniformLocation(HBAOPass.Program, "numSteps"), numSteps);
+			} else { // CryEngine2 derivates
 				SSAOPass.Use();
+				glUniform1i(glGetUniformLocation(SSAOPass.Program, "kernelSize"), kernelSize);
+				glUniform1f(glGetUniformLocation(SSAOPass.Program, "radius"), kernelRadius);
+				glUniform1f(glGetUniformLocation(SSAOPass.Program, "bias"), kernelBias);
 				for (int i = 0; i < kernelSize; i++) {
 					char binding[32];
 					sprintf(binding, "kernel[%d]", i);
@@ -484,21 +564,26 @@ int main()
 				}
 			}
 			glActiveTexture(GL_TEXTURE0);
-			glBindTexture(GL_TEXTURE_2D, ssao_mode == SSAO_RECONSTR ? gDepthBuffer : gPosition);
+			if (ssao_mode == CRYENGINE2_AO_RECONSTR || ssao_mode == STARCRAFT2_AO_RECONSTR)
+				glBindTexture(GL_TEXTURE_2D, gDepthBuffer); // With Depth Resolve, we pass the depth buffer and we reconstruct positions in fragment shader
+			else
+				glBindTexture(GL_TEXTURE_2D, gPosition);
 			glActiveTexture(GL_TEXTURE1);
 			glBindTexture(GL_TEXTURE_2D, gNormal);
 			glActiveTexture(GL_TEXTURE2);
 			glBindTexture(GL_TEXTURE_2D, noiseTexture);
 			DrawQuad();
 			glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-			// STEP 3 - Blurring SSAO Texture to avoid noise
-			glBindFramebuffer(GL_FRAMEBUFFER, SSAOBlurFBO);
-			glClear(GL_COLOR_BUFFER_BIT);
-			blurPass.Use();
-			glActiveTexture(GL_TEXTURE0);
-			glBindTexture(GL_TEXTURE_2D, SSAOColorBuffer);
-			DrawQuad();
+			
+			if (have_blur) {
+				// STEP 3 - Blurring SSAO Texture to avoid noise
+				glBindFramebuffer(GL_FRAMEBUFFER, SSAOBlurFBO);
+				glClear(GL_COLOR_BUFFER_BIT);
+				blurPass.Use();
+				glActiveTexture(GL_TEXTURE0);
+				glBindTexture(GL_TEXTURE_2D, SSAOColorBuffer);
+				DrawQuad();
+			}
 		}
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 		
@@ -507,12 +592,12 @@ int main()
 			glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 			simplePass.Use();
 			glActiveTexture(GL_TEXTURE0);
-			glBindTexture(GL_TEXTURE_2D, SSAOColorBufferBlurred);
+			glBindTexture(GL_TEXTURE_2D, have_blur ? SSAOColorBufferBlurred : SSAOColorBuffer);
 			DrawQuad();
 		} else {
 			// STEP 4 - Deferred rendering for lighting with added SSAO
 			glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-			if (ssao_mode == SSAO_RECONSTR) {
+			if (ssao_mode == CRYENGINE2_AO_RECONSTR || ssao_mode == STARCRAFT2_AO_RECONSTR) { // If we use CryEngine 2 AO derivatives with depth resolve, we need a different program
 				lightingReconstrPass.Use();
 				glm::vec3 lightPosView = view * glm::vec4(lightPos, 1.0);
 				glUniform3fv(glGetUniformLocation(lightingReconstrPass.Program, "lightPosition"), 1, glm::value_ptr(lightPosView));
@@ -528,13 +613,16 @@ int main()
 				glUniform1f(glGetUniformLocation(lightingPass.Program, "quadraticAttenuation"), quadraticAttenuation);
 			}
 			glActiveTexture(GL_TEXTURE0);
-			glBindTexture(GL_TEXTURE_2D, ssao_mode == SSAO_RECONSTR ? gDepthBuffer : gPosition);
+			if (ssao_mode == CRYENGINE2_AO_RECONSTR || ssao_mode == STARCRAFT2_AO_RECONSTR)
+				glBindTexture(GL_TEXTURE_2D, gDepthBuffer); // With Depth Resolve, we pass the depth buffer and we reconstruct positions in fragment shader
+			else
+				glBindTexture(GL_TEXTURE_2D, gPosition);
 			glActiveTexture(GL_TEXTURE1);
 			glBindTexture(GL_TEXTURE_2D, gNormal);
 			glActiveTexture(GL_TEXTURE2);
 			glBindTexture(GL_TEXTURE_2D, gAlbedo);
 			glActiveTexture(GL_TEXTURE3);
-			glBindTexture(GL_TEXTURE_2D, ssao_mode == NO_SSAO ? gWhiteTex : SSAOColorBufferBlurred);
+			glBindTexture(GL_TEXTURE_2D, ssao_mode == NO_SSAO ? gWhiteTex : (have_blur ? SSAOColorBufferBlurred : SSAOColorBuffer));
 			DrawQuad();
 		}
 		
@@ -543,6 +631,15 @@ int main()
 			ImGui_ImplOpenGL3_NewFrame();
 			ImGui_ImplGlfw_NewFrame();
 			ImGui::NewFrame();
+			ImGui::Begin("Frame Info");
+			ImGui::Text("Average Frame Time: %.06f s", averageFrameTime);
+			ImGui::Text("Last Frame Time: %.06f s", deltaTime);
+			if (ImGui::Button("Reset Counters")) {
+				numFrames = -1;
+				averageFrameTime = 0.0f;
+				deltaTimeSum = 0.0f;
+			}
+			ImGui::End();
 			ImGui::Begin("G Buffer Inspector");
 			static int filter_idx = 0;
 			if (ImGui::BeginCombo("##combo", gbufferNames[filter_idx])) {
@@ -576,6 +673,18 @@ int main()
 				}
 				ImGui::EndCombo();
 			}
+			ImGui::Checkbox("Perform Blur Pass", &have_blur);
+			if (ssao_mode != HBAO) {
+				ImGui::SliderInt("Kernel Size", &kernelSize, 8, 256);
+				ImGui::SliderFloat("Kernel Radius", &kernelRadius, 0.1f, 2.0f);
+				ImGui::SliderFloat("Kernel Bias", &kernelBias, 0.01f, 1.0f);
+			} else {
+				ImGui::SliderInt("Directions Number", &numDirections, 4, 128);
+				ImGui::SliderFloat("Kernel Radius", &kernelRadius, 0.1f, 2.0f);
+				ImGui::SliderInt("Per Step Samples Number", &numSteps, 2, 128);
+				ImGui::SliderFloat("Angle Bias", &kernelBias, 0.01f, 1.0f);
+			}
+			ImGui::Separator();
 			ImGui::Checkbox("Show AO Buffer Only", &show_occlusion);
 			ImGui::End();
 			

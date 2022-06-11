@@ -7,7 +7,7 @@ uniform sampler2D gPosition;
 uniform sampler2D gNormal;
 uniform sampler2D noiseTexture;
 
-uniform vec3 kernel[64];
+uniform vec3 kernel[256];
 
 // SSAO Configuration
 uniform int kernelSize;
