@@ -35,19 +35,19 @@ void main()
 	float occlusion = 0.0f;
 	for (int i = 0; i < kernelSize; ++i) {
 		// Get sample position
-		vec3 samplePos = TBN * kernel[i]; // Get the sample to camera space
+		vec3 samplePos = TBN * kernel[i]; // Get the sample to view space
 		samplePos = fragPos + samplePos * radius; 
 		
-		// Project sample position (to sample texture) (to get position on screen/texture)
+		// Project sample position (to get position on screen)
 		vec4 offset = vec4(samplePos, 1.0f);
-		offset = projectionMatrix * offset; // Get the offset to clip space
+		offset = projectionMatrix * offset; // Get the offset to screen space
 		offset.xyz /= offset.w; // Normalize the value
 		offset.xyz = offset.xyz * 0.5f + 0.5f; // Get it in [0, 1] range
 		
 		// Get sample depth
 		float sampleDepth = texture(gPosition, offset.xy).z;
 		
-		// Range check & accumulate
+		// Range check and accumulation (Range check is introduced to avoid very far surfaces to alter sampled position AO factor)
 		float rangeCheck = smoothstep(0.0f, 1.0f, radius / abs(fragPos.z - sampleDepth));
 		occlusion += (sampleDepth >= samplePos.z + bias ? 1.0f : 0.0f) * rangeCheck;		   
 	}

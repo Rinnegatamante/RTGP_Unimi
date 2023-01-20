@@ -10,7 +10,6 @@ uniform sampler2D noiseTexture;
 uniform int numDirections; // Number of directions displacements to perform
 uniform int numSteps; // Number of steps to perform per direction
 uniform float sampleRadius; // Radius size to consider for our hemisphere
-uniform float angleBias; // Bias for the first angle consideration
 
 const float PI = 3.14159265f;
 
@@ -19,7 +18,7 @@ const vec2 noiseScale = vec2(1200.0/4.0, 900.0/4.0);
 
 void main()
 {
-	// get input for SSAO algorithm
+	// get input for HBAO algorithm
 	vec3 fragPos = texture(gPosition, vTexcoords).xyz;
 	vec3 normal = normalize(texture(gNormal, vTexcoords).xyz);
 	vec3 randomVec = texture(noiseTexture, vTexcoords * noiseScale).xyz;
