@@ -132,9 +132,9 @@ GLfloat linearAttenuation = 0.09f;
 GLfloat quadraticAttenuation = 0.032f;
 
 // Configuration for the SSAO kernel samples
-int kernelSize = 64; // Kernel Size for CryEngine2 derivates techniques
-float kernelRadius = 0.5f; // Hemisphere/Sphere radius for the kernel
-float kernelBias = 0.025f; // Kernel bias for CryEngine2 derivates techniques and Angle bias for HBAO
+int kernelSize = 256; // Kernel Size for CryEngine2 derivates techniques
+float kernelRadius = 10.0f; // Hemisphere/Sphere radius for the kernel
+float kernelBias = 0.1f; // Kernel bias for CryEngine2 derivates techniques
 int numDirections = 16; // Number of different directions displacements to use for HBAO
 int numSteps = 4; // Number of steps to perform per each direction for HBAO
 
@@ -155,6 +155,7 @@ enum {
 	STARCRAFT2_AO,
 	STARCRAFT2_AO_RECONSTR,
 	HBAO,
+	ALCHEMY_AO,
 	SSAO_MODES_NUM
 };
 const char *techniqueNames[] = {
@@ -164,6 +165,7 @@ const char *techniqueNames[] = {
 	"StarCraft II AO",
 	"StarCraft II AO with Depth Resolve",
 	"Horizon Based Ambient Occlusion (HBAO)",
+	"Alchemy AO"
 };
 
 // G Buffer buffers
@@ -298,6 +300,7 @@ int main()
 	Shader SSAOPass("ssao.vert", "ssao.frag");
 	Shader SSAOReconstrPass("ssao_reconstr.vert", "ssao_reconstr.frag");
 	Shader HBAOPass("ssao.vert", "hbao.frag");
+	Shader AlchemyPass("ssao.vert", "alchemy_ao.frag");
 	Shader blurPass("ssao.vert", "blur.frag");
 	Shader simplePass("ssao.vert", "simple.frag");
 
@@ -427,6 +430,11 @@ int main()
 	glUniform1i(glGetUniformLocation(HBAOPass.Program, "gPosition"), 0);
 	glUniform1i(glGetUniformLocation(HBAOPass.Program, "gNormal"), 1);
 	glUniform1i(glGetUniformLocation(HBAOPass.Program, "noiseTexture"), 2);
+	AlchemyPass.Use();
+	glUniform1i(glGetUniformLocation(AlchemyPass.Program, "gPosition"), 0);
+	glUniform1i(glGetUniformLocation(AlchemyPass.Program, "gNormal"), 1);
+	glUniform1i(glGetUniformLocation(AlchemyPass.Program, "noiseTexture"), 2);
+	glUniformMatrix4fv(glGetUniformLocation(AlchemyPass.Program, "projectionMatrix"), 1, GL_FALSE, glm::value_ptr(projection));
 	SSAOReconstrPass.Use();
 	glUniform1f(glGetUniformLocation(SSAOReconstrPass.Program, "gAspectRatio"), (float)screenWidth/(float)screenHeight);
 	glUniform1f(glGetUniformLocation(SSAOReconstrPass.Program, "gTanFOV"), tan(FOV));
@@ -474,6 +482,7 @@ int main()
 			case CRYENGINE2_AO_RECONSTR:
 				generateSamplesForCryEngine(SSAOKernel);
 				break;
+			case ALCHEMY_AO:
 			case STARCRAFT2_AO:
 			case STARCRAFT2_AO_RECONSTR:
 				generateSamplesForStarCraft(SSAOKernel);
@@ -552,6 +561,16 @@ int main()
 				glUniform1i(glGetUniformLocation(HBAOPass.Program, "numDirections"), numDirections);
 				glUniform1f(glGetUniformLocation(HBAOPass.Program, "sampleRadius"), kernelRadius);
 				glUniform1i(glGetUniformLocation(HBAOPass.Program, "numSteps"), numSteps);
+			} else if (ssao_mode == ALCHEMY_AO) { // Alchemy AO
+				AlchemyPass.Use();
+				glUniform1i(glGetUniformLocation(AlchemyPass.Program, "kernelSize"), kernelSize);
+				glUniform1f(glGetUniformLocation(AlchemyPass.Program, "radius"), kernelRadius);
+				glUniform1f(glGetUniformLocation(AlchemyPass.Program, "bias"), kernelBias);
+				for (int i = 0; i < kernelSize; i++) {
+					char binding[32];
+					sprintf(binding, "kernel[%d]", i);
+					glUniform3fv(glGetUniformLocation(AlchemyPass.Program, binding), 1, glm::value_ptr(SSAOKernel[i]));
+				}
 			} else { // CryEngine2 derivates
 				SSAOPass.Use();
 				glUniform1i(glGetUniformLocation(SSAOPass.Program, "kernelSize"), kernelSize);
@@ -676,16 +695,16 @@ int main()
 			ImGui::Checkbox("Perform Blur Pass", &have_blur);
 			if (ssao_mode != HBAO) {
 				ImGui::SliderInt("Kernel Size", &kernelSize, 8, 256);
-				ImGui::SliderFloat("Kernel Radius", &kernelRadius, 0.1f, 2.0f);
+				ImGui::SliderFloat("Kernel Radius", &kernelRadius, 0.1f, 20.0f);
 				ImGui::SliderFloat("Kernel Bias", &kernelBias, 0.01f, 1.0f);
 			} else {
 				ImGui::SliderInt("Directions Number", &numDirections, 4, 128);
 				ImGui::SliderFloat("Kernel Radius", &kernelRadius, 0.1f, 2.0f);
 				ImGui::SliderInt("Per Step Samples Number", &numSteps, 2, 128);
-				ImGui::SliderFloat("Angle Bias", &kernelBias, 0.01f, 1.0f);
 			}
 			ImGui::Separator();
-			ImGui::Checkbox("Show AO Buffer Only", &show_occlusion);
+			if (ssao_mode != NO_SSAO)
+				ImGui::Checkbox("Show AO Buffer Only", &show_occlusion);
 			ImGui::End();
 			
 			ImGui::Render();
@@ -704,6 +723,9 @@ int main()
 	// we delete the Shader Programs
 	geometryPass.Delete();
 	SSAOPass.Delete();
+	SSAOReconstrPass.Delete();
+	HBAOPass.Delete();
+	AlchemyPass.Delete();
 	blurPass.Delete();
 	lightingPass.Delete();
 	
