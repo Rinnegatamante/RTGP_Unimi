@@ -156,6 +156,7 @@ enum {
 	STARCRAFT2_AO_RECONSTR,
 	HBAO,
 	ALCHEMY_AO,
+	UE4_AO,
 	SSAO_MODES_NUM
 };
 const char *techniqueNames[] = {
@@ -165,7 +166,8 @@ const char *techniqueNames[] = {
 	"StarCraft II AO",
 	"StarCraft II AO with Depth Resolve",
 	"Horizon Based Ambient Occlusion (HBAO)",
-	"Alchemy AO"
+	"Alchemy AO",
+	"Unreal Engine 4 AO"
 };
 
 // G Buffer buffers
@@ -194,7 +196,7 @@ GLint ssao_mode = CRYENGINE2_AO;
 GLboolean camera_mode = GL_TRUE;
 
 // Functions used to generate samples for our SSAO techniques
-void generateSamplesForCryEngine(std::vector<glm::vec3>& SSAOKernel) { // CryEngine 2 AO generator (Sphere around a point)
+void generateSphereSamples(std::vector<glm::vec3>& SSAOKernel) { // CryEngine 2 AO generator (Sphere around a point)
 	std::uniform_real_distribution<GLfloat> randomFloats(0.0, 1.0);
 	std::default_random_engine generator;
 	SSAOKernel.clear();
@@ -214,7 +216,7 @@ void generateSamplesForCryEngine(std::vector<glm::vec3>& SSAOKernel) { // CryEng
 		SSAOKernel.push_back(sample);
 	}
 }
-void generateSamplesForStarCraft(std::vector<glm::vec3>& SSAOKernel) { // StarCraft II AO generator (Oriented Hemisphere considering point normal)
+void generateHemiSphereSamples(std::vector<glm::vec3>& SSAOKernel) { // StarCraft II AO generator (Oriented Hemisphere considering point normal)
 	std::uniform_real_distribution<GLfloat> randomFloats(0.0, 1.0);
 	std::default_random_engine generator;
 	SSAOKernel.clear();
@@ -301,6 +303,7 @@ int main()
 	Shader SSAOReconstrPass("ssao_reconstr.vert", "ssao_reconstr.frag");
 	Shader HBAOPass("ssao.vert", "hbao.frag");
 	Shader AlchemyPass("ssao.vert", "alchemy_ao.frag");
+	Shader UnrealPass("ssao.vert", "ue4_ao.frag");
 	Shader blurPass("ssao.vert", "blur.frag");
 	Shader simplePass("ssao.vert", "simple.frag");
 
@@ -397,7 +400,7 @@ int main()
 
 	// Generate the sample kernel required for SSAO processing
 	std::vector<glm::vec3> SSAOKernel;
-	generateSamplesForCryEngine(SSAOKernel);
+	generateSphereSamples(SSAOKernel);
 	
 	// Generate a noise texture required for SSAO processing holding random vectors to use as directions during AO calculation
 	std::uniform_real_distribution<GLfloat> randomFloats(0.0, 1.0);
@@ -435,6 +438,11 @@ int main()
 	glUniform1i(glGetUniformLocation(AlchemyPass.Program, "gNormal"), 1);
 	glUniform1i(glGetUniformLocation(AlchemyPass.Program, "noiseTexture"), 2);
 	glUniformMatrix4fv(glGetUniformLocation(AlchemyPass.Program, "projectionMatrix"), 1, GL_FALSE, glm::value_ptr(projection));
+	UnrealPass.Use();
+	glUniform1i(glGetUniformLocation(UnrealPass.Program, "gPosition"), 0);
+	glUniform1i(glGetUniformLocation(UnrealPass.Program, "gNormal"), 1);
+	glUniform1i(glGetUniformLocation(UnrealPass.Program, "noiseTexture"), 2);
+	glUniformMatrix4fv(glGetUniformLocation(UnrealPass.Program, "projectionMatrix"), 1, GL_FALSE, glm::value_ptr(projection));
 	SSAOReconstrPass.Use();
 	glUniform1f(glGetUniformLocation(SSAOReconstrPass.Program, "gAspectRatio"), (float)screenWidth/(float)screenHeight);
 	glUniform1f(glGetUniformLocation(SSAOReconstrPass.Program, "gTanFOV"), tan(FOV));
@@ -480,12 +488,13 @@ int main()
 			switch (ssao_mode) {
 			case CRYENGINE2_AO:
 			case CRYENGINE2_AO_RECONSTR:
-				generateSamplesForCryEngine(SSAOKernel);
+				generateSphereSamples(SSAOKernel);
 				break;
+			case UE4_AO:
 			case ALCHEMY_AO:
 			case STARCRAFT2_AO:
 			case STARCRAFT2_AO_RECONSTR:
-				generateSamplesForStarCraft(SSAOKernel);
+				generateHemiSphereSamples(SSAOKernel);
 				break;
 			default:
 				break;
@@ -546,7 +555,9 @@ int main()
 			// STEP 2 - SSAO Texture generation
 			glBindFramebuffer(GL_FRAMEBUFFER, SSAOfbo);
 			glClear(GL_COLOR_BUFFER_BIT);
-			if (ssao_mode == CRYENGINE2_AO_RECONSTR || ssao_mode == STARCRAFT2_AO_RECONSTR) { // CryEngine2 derivates with Depth Resolve
+			switch (ssao_mode) {
+			case CRYENGINE2_AO_RECONSTR:
+			case STARCRAFT2_AO_RECONSTR:
 				SSAOReconstrPass.Use();
 				glUniform1i(glGetUniformLocation(SSAOReconstrPass.Program, "kernelSize"), kernelSize);
 				glUniform1f(glGetUniformLocation(SSAOReconstrPass.Program, "radius"), kernelRadius);
@@ -556,12 +567,15 @@ int main()
 					sprintf(binding, "kernel[%d]", i);
 					glUniform3fv(glGetUniformLocation(SSAOReconstrPass.Program, binding), 1, glm::value_ptr(SSAOKernel[i]));
 				}
-			} else if (ssao_mode == HBAO) { // HBAO
+				break;
+			case HBAO:
 				HBAOPass.Use();
 				glUniform1i(glGetUniformLocation(HBAOPass.Program, "numDirections"), numDirections);
 				glUniform1f(glGetUniformLocation(HBAOPass.Program, "sampleRadius"), kernelRadius);
 				glUniform1i(glGetUniformLocation(HBAOPass.Program, "numSteps"), numSteps);
-			} else if (ssao_mode == ALCHEMY_AO) { // Alchemy AO
+				break;
+				break;
+			case ALCHEMY_AO:
 				AlchemyPass.Use();
 				glUniform1i(glGetUniformLocation(AlchemyPass.Program, "kernelSize"), kernelSize);
 				glUniform1f(glGetUniformLocation(AlchemyPass.Program, "radius"), kernelRadius);
@@ -571,7 +585,19 @@ int main()
 					sprintf(binding, "kernel[%d]", i);
 					glUniform3fv(glGetUniformLocation(AlchemyPass.Program, binding), 1, glm::value_ptr(SSAOKernel[i]));
 				}
-			} else { // CryEngine2 derivates
+				break;
+			case UE4_AO:
+				UnrealPass.Use();
+				glUniform1i(glGetUniformLocation(UnrealPass.Program, "kernelSize"), kernelSize);
+				glUniform1f(glGetUniformLocation(UnrealPass.Program, "radius"), kernelRadius);
+				glUniform1f(glGetUniformLocation(UnrealPass.Program, "bias"), kernelBias);
+				for (int i = 0; i < kernelSize; i++) {
+					char binding[32];
+					sprintf(binding, "kernel[%d]", i);
+					glUniform3fv(glGetUniformLocation(UnrealPass.Program, binding), 1, glm::value_ptr(SSAOKernel[i]));
+				}
+				break;
+			default:
 				SSAOPass.Use();
 				glUniform1i(glGetUniformLocation(SSAOPass.Program, "kernelSize"), kernelSize);
 				glUniform1f(glGetUniformLocation(SSAOPass.Program, "radius"), kernelRadius);
@@ -581,7 +607,9 @@ int main()
 					sprintf(binding, "kernel[%d]", i);
 					glUniform3fv(glGetUniformLocation(SSAOPass.Program, binding), 1, glm::value_ptr(SSAOKernel[i]));
 				}
+				break;
 			}
+
 			glActiveTexture(GL_TEXTURE0);
 			if (ssao_mode == CRYENGINE2_AO_RECONSTR || ssao_mode == STARCRAFT2_AO_RECONSTR)
 				glBindTexture(GL_TEXTURE_2D, gDepthBuffer); // With Depth Resolve, we pass the depth buffer and we reconstruct positions in fragment shader
@@ -726,6 +754,7 @@ int main()
 	SSAOReconstrPass.Delete();
 	HBAOPass.Delete();
 	AlchemyPass.Delete();
+	UnrealPass.Delete();
 	blurPass.Delete();
 	lightingPass.Delete();
 	
