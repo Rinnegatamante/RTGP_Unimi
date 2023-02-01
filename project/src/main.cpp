@@ -125,7 +125,7 @@ glm::mat3 bunnyNormalMatrix = glm::mat3(1.0f);
 // we create a camera. We pass the initial position as a paramenter to the constructor. The last boolean tells if we want a camera "anchored" to the ground
 Camera camera(glm::vec3(0.0f, 0.0f, 7.0f), GL_FALSE);
 
-// light configuration
+// Light configuration
 glm::vec3 lightPos = glm::vec3(2.0f, 4.0f, -2.0f);
 glm::vec3 lightColor = glm::vec3(0.2f, 0.8f, 0.2f);
 GLfloat linearAttenuation = 0.09f;
@@ -703,6 +703,11 @@ int main()
 			ImGui::End();
 			
 			ImGui::Begin("Configurator");
+			ImGui::PushItemWidth(200.0f);
+			ImGui::ColorPicker3("Light Color", glm::value_ptr(lightColor));
+			ImGui::PopItemWidth();
+			ImGui::SliderFloat3("Light Position", glm::value_ptr(lightPos), -10.0f, 10.0f);
+			ImGui::Separator();
 			ImGui::Checkbox("Spin Models", &spinning);
 			ImGui::Separator();
 			static int mode_idx = 1;
