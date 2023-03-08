@@ -742,6 +742,10 @@ int main()
 				glBindTexture(GL_TEXTURE_CUBE_MAP, textureCube);
 			}	
 			DrawQuad();
+			if (ssao_mode == SSDO) {
+				glActiveTexture(GL_TEXTURE3);
+				glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+			}	
 			
 			if (have_blur) {
 				// STEP 3 - Blurring SSAO Texture to avoid noise
@@ -868,6 +872,8 @@ int main()
 				glBindTexture(GL_TEXTURE_2D, gPosition);
 			}
 			cubeModel.Draw();
+			glActiveTexture(GL_TEXTURE0);
+			glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
 			glEnable(GL_DEPTH_TEST);
 		}
 		
@@ -1023,7 +1029,6 @@ void RenderObjects(Shader &shader, Model &cubeModel, Model &sphereModel, Model &
 
 	// SPHERE
 	// we reset to identity at each frame
-	glUniform1i(glGetUniformLocation(shader.Program, "invertedNormals"), 0); // Back to standard normals calculation
 	sphereModelMatrix = glm::mat4(1.0f);
 	sphereNormalMatrix = glm::mat3(1.0f);
 	sphereModelMatrix = glm::translate(sphereModelMatrix, glm::vec3(-3.0f, 0.3f, 0.0f));

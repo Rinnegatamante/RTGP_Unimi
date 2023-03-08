@@ -47,7 +47,7 @@ void main()
 		sampleDir = deltaRotationMatrix * sampleDir;
 		
 		// Perform incremental sampling steps for each direction
-		float oldAngle = 0.025f;
+		float oldAngle = 0.0f;
 		for (int j = 0; j < numSteps; ++j) {
 			// Displace from current fragment position towards the sample direction with some noise in between
 			vec2 samplePos = vTexcoords + (randomVec.z + float(j)) * sampleDir;
